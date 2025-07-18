@@ -8,7 +8,7 @@ data = {
     "id_cliente": 1,
     "powmin": 3,
     "powmax": 6,
-    "engine": "spark"
+    "engine": "mpi"
 }
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

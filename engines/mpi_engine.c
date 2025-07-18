@@ -1,146 +1,179 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <string.h>
 #include <mpi.h>
 
 #define ind2d(i,j) (i)*(tam+2)+j
 #define POWMIN 3
 #define POWMAX 10
+#define MESTRE 0
+#define TAG_A 0
+#define TAG_B 1
 
 double wall_time(void) {
-    struct timeval tv;
-    struct timezone tz;
-    gettimeofday(&tv, &tz);
-    return(tv.tv_sec + tv.tv_usec/1000000.0);
-}
+  struct timeval tv;
+  struct timezone tz;
 
-void UmaVida_Local(int* sub_tabulIn, int* sub_tabulout, int tam_local_rows, int tam_total_cols) {
-    int i, j, vizviv;
-    for (i = 1; i <= tam_local_rows; i++) {
-        for (j = 1; j <= tam_total_cols - 2; j++) {
-            vizviv = sub_tabulIn[i * tam_total_cols + (j-1)] + sub_tabulIn[i * tam_total_cols + j] +
-                     sub_tabulIn[i * tam_total_cols + (j+1)] +
-                     sub_tabulIn[(i-1) * tam_total_cols + (j-1)] + sub_tabulIn[(i-1) * tam_total_cols + j] +
-                     sub_tabulIn[(i-1) * tam_total_cols + (j+1)] +
-                     sub_tabulIn[(i+1) * tam_total_cols + (j-1)] + sub_tabulIn[(i+1) * tam_total_cols + j] +
-                     sub_tabulIn[(i+1) * tam_total_cols + (j+1)];
+  gettimeofday(&tv, &tz);
+  return(tv.tv_sec + tv.tv_usec/1000000.0);
+} /* fim-wall_time */
 
-            if (sub_tabulIn[i * tam_total_cols + j] && vizviv < 2)
-                sub_tabulout[i * tam_total_cols + j] = 0;
-            else if (sub_tabulIn[i * tam_total_cols + j] && vizviv > 3)
-                sub_tabulout[i * tam_total_cols + j] = 0;
-            else if (!sub_tabulIn[i * tam_total_cols + j] && vizviv == 3)
-                sub_tabulout[i * tam_total_cols + j] = 1;
-            else
-                sub_tabulout[i * tam_total_cols + j] = sub_tabulIn[i * tam_total_cols + j];
-        }
-    }
-}
+void UmaVida_Paralelo(int* tabulIn, int* tabulOut, int tam, int linhas_locais) {
+  int i, j, vizviv;
 
-void DumpTabul(int * tabul, int tam, int first, int last, char* msg) {}
-void InitTabul (int* tabulIn, int* tabulout, int tam){}
-int Correto (int* tabul, int tam){ return 0; }
+  for (i=1; i<=linhas_locais; i++) {
+    for (j= 1; j<=tam; j++) {
+      vizviv =  tabulIn[ind2d(i-1,j-1)] + tabulIn[ind2d(i-1,j  )] +
+                tabulIn[ind2d(i-1,j+1)] + tabulIn[ind2d(i  ,j-1)] +
+                tabulIn[ind2d(i  ,j+1)] + tabulIn[ind2d(i+1,j-1)] +
+                tabulIn[ind2d(i+1,j  )] + tabulIn[ind2d(i+1,j+1)];
+      if (tabulIn[ind2d(i,j)] && vizviv < 2)
+        tabulOut[ind2d(i,j)] = 0;
+      else if (tabulIn[ind2d(i,j)] && vizviv > 3)
+        tabulOut[ind2d(i,j)] = 0;
+      else if (!tabulIn[ind2d(i,j)] && vizviv == 3)
+        tabulOut[ind2d(i,j)] = 1;
+      else
+        tabulOut[ind2d(i,j)] = tabulIn[ind2d(i,j)];
+    } /* fim-for */
+  } /* fim-for */
+} /* fim-UmaVida_Paralelo */
+
+
+void InitTabul(int* tabulIn, int tam){
+  size_t total_size = (size_t)(tam + 2) * (tam + 2) * sizeof(int);
+  memset(tabulIn, 0, total_size);
+
+  tabulIn[ind2d(1,2)] = 1; tabulIn[ind2d(2,3)] = 1;
+  tabulIn[ind2d(3,1)] = 1; tabulIn[ind2d(3,2)] = 1;
+  tabulIn[ind2d(3,3)] = 1;
+} /* fim-InitTabul */
+
+
+int Correto(int* tabul, int tam, int global_cnt){
+  return (global_cnt == 5 && tabul[ind2d(tam-2,tam-1)] &&
+      tabul[ind2d(tam-1,tam  )] && tabul[ind2d(tam  ,tam-2)] &&
+      tabul[ind2d(tam  ,tam-1)] && tabul[ind2d(tam  ,tam  )]);
+} /* fim-Correto */
+
 
 int main(int argc, char** argv) {
-    int rank, num_procs;
-    int pow, i, tam_total;
-    int *global_tabulIn = NULL, *global_tabulout = NULL;
-    double to_total, t1_total, t2_total, t3_total;
+  int pow, i, tam, *tabulIn_global, *tabulIn_local, *tabulOut_local;
+  double t0, t1, t2, t3;
+  int rank, size;
+  int linhas_por_proc, resto, minhas_linhas;
+  
+  MPI_Init(&argc, &argv);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+  for (pow=POWMIN; pow<=POWMAX; pow++) {
+    tam = 1 << pow;
 
-    to_total = wall_time();
+    // divisao de linhas para cada processo
+    linhas_por_proc = tam / size;
+    resto = tam % size;
+    minhas_linhas = (rank < resto) ? linhas_por_proc + 1 : linhas_por_proc;
 
-    for (pow = POWMIN; pow <= POWMAX; pow++) {
-        tam_total = 1 << pow;
-        int tam_padded = tam_total + 2;
-        int rows_per_proc = tam_total / num_procs;
-        int local_rows_with_padding = rows_per_proc + 2;
-        int local_start_row_logical = rank * rows_per_proc + 1;
-        int local_end_row_logical = (rank + 1) * rows_per_proc;
+    size_t local_size_bytes = (size_t)(minhas_linhas + 2) * (tam + 2) * sizeof(int);
+    tabulIn_local = (int *)malloc(local_size_bytes);
+    tabulOut_local = (int *)malloc(local_size_bytes);
+    memset(tabulIn_local, 0, local_size_bytes);
+    memset(tabulOut_local, 0, local_size_bytes);
 
-        int *sub_tabulIn = (int*) malloc(local_rows_with_padding * tam_padded * sizeof(int));
-        int *sub_tabulout = (int*) malloc(local_rows_with_padding * tam_padded * sizeof(int));
-
-        if (rank == 0) {
-            global_tabulIn = (int*) malloc(tam_padded * tam_padded * sizeof(int));
-            global_tabulout = (int*) malloc(tam_padded * tam_padded * sizeof(int));
-            InitTabul(global_tabulIn, global_tabulout, tam_total);
-        }
-
-        t1_total = wall_time();
-
-        for (int p = 0; p < num_procs; ++p) {
-            int current_proc_start_row_logical = p * rows_per_proc + 1;
-            int current_proc_end_row_logical = (p + 1) * rows_per_proc;
-            int src_row_global = current_proc_start_row_logical - 1;
-            int num_rows_to_send = rows_per_proc + 2;
-            if (p == 0) src_row_global = 0;
-
-            if (rank == 0) {
-                for (int r = 0; r < local_rows_with_padding; ++r) {
-                    for (int c = 0; c < tam_padded; ++c) {
-                        if (r + current_proc_start_row_logical - 1 >= 0 && r + current_proc_start_row_logical - 1 < tam_padded)
-                            sub_tabulIn[r * tam_padded + c] = global_tabulIn[(r + current_proc_start_row_logical - 1) * tam_padded + c];
-                        else
-                            sub_tabulIn[r * tam_padded + c] = 0;
-                    }
-                }
+    if (rank == MESTRE) {
+        t0 = wall_time();
+        tabulIn_global = (int *)malloc((size_t)(tam + 2) * (tam + 2) * sizeof(int));
+        InitTabul(tabulIn_global, tam);
+    }
+    
+    // distribui o tabuleiro inicial
+    if (rank == MESTRE) {
+        int offset_linhas = 0;
+        for(i = 0; i < size; i++) {
+            int linhas_p = (i < resto) ? linhas_por_proc + 1 : linhas_por_proc;
+            if (i == MESTRE) {
+                memcpy(&tabulIn_local[ind2d(1,0)], &tabulIn_global[ind2d(offset_linhas+1, 0)], linhas_p * (tam+2) * sizeof(int));
             } else {
-                for (int r = 0; r < local_rows_with_padding; ++r) {
-                    for (int c = 0; c < tam_padded; ++c) {
-                        sub_tabulIn[r * tam_padded + c] = 0;
-                    }
-                }
+                MPI_Send(&tabulIn_global[ind2d(offset_linhas+1, 0)], linhas_p * (tam+2), MPI_INT, i, TAG_A, MPI_COMM_WORLD);
             }
+            offset_linhas += linhas_p;
         }
-
-        for (i = 0; i < 2 * (tam_total - 3); i++) {
-            MPI_Request reqs[4];
-            MPI_Status stats[4];
-            int send_tag_up = 1, recv_tag_up = 2;
-            int send_tag_down = 3, recv_tag_down = 4;
-
-            if (rank > 0) {
-                MPI_Isend(&sub_tabulIn[1 * tam_padded], tam_padded, MPI_INT, rank - 1, send_tag_up, MPI_COMM_WORLD, &reqs[0]);
-                MPI_Irecv(&sub_tabulIn[0 * tam_padded], tam_padded, MPI_INT, rank - 1, recv_tag_down, MPI_COMM_WORLD, &reqs[1]);
-            }
-            if (rank < num_procs - 1) {
-                MPI_Isend(&sub_tabulIn[(local_rows_with_padding - 2) * tam_padded], tam_padded, MPI_INT, rank + 1, send_tag_down, MPI_COMM_WORLD, &reqs[2]);
-                MPI_Irecv(&sub_tabulIn[(local_rows_with_padding - 1) * tam_padded], tam_padded, MPI_INT, rank + 1, recv_tag_up, MPI_COMM_WORLD, &reqs[3]);
-            }
-
-            if (rank > 0) MPI_Waitall(2, reqs, stats);
-            if (rank < num_procs - 1) MPI_Waitall(2, reqs + 2, stats + 2);
-
-            UmaVida_Local(sub_tabulIn, sub_tabulout, local_rows_with_padding - 2, tam_padded);
-
-            int *temp = sub_tabulIn;
-            sub_tabulIn = sub_tabulout;
-            sub_tabulout = temp;
-        }
-
-        if (rank == 0) {
-            t2_total = wall_time();
-            if (Correto(sub_tabulIn, tam_total))
-                printf("**Ok, RESULTADO CORRETO**\n");
-            else
-                printf("**Nok, RESULTADO ERRADO**\n");
-            t3_total = wall_time();
-            printf("tam=%d; tempos: init=%7.7f, comp=%7.7f, fim=%7.7f tot=%7.7f \n",
-                   tam_total, t1_total - to_total, t2_total - t1_total, t3_total - t2_total, t3_total - to_total);
-        }
-
-        free(sub_tabulIn);
-        free(sub_tabulout);
-        if (rank == 0) {
-            free(global_tabulIn);
-            free(global_tabulout);
-        }
+    } else {
+        MPI_Recv(&tabulIn_local[ind2d(1,0)], minhas_linhas * (tam+2), MPI_INT, MESTRE, TAG_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     }
 
-    MPI_Finalize();
-    return 0;
-}
+    MPI_Barrier(MPI_COMM_WORLD);
+    if(rank == MESTRE) t1 = wall_time();
+
+    int *temp;
+    for (i=0; i < 4 * (tam-3); i++) {
+      // troca de halos com vizinhos
+      // Fase 1: enviar para baixo, receber de cima
+      if (rank < size - 1)
+        MPI_Send(&tabulIn_local[ind2d(minhas_linhas, 0)], tam+2, MPI_INT, rank + 1, TAG_A, MPI_COMM_WORLD);
+      if (rank > 0)
+        MPI_Recv(&tabulIn_local[ind2d(0, 0)], tam+2, MPI_INT, rank - 1, TAG_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      
+      // Fase 2: enviar para cima, receber de baixo
+      if (rank > 0)
+        MPI_Send(&tabulIn_local[ind2d(1, 0)], tam+2, MPI_INT, rank - 1, TAG_B, MPI_COMM_WORLD);
+      if (rank < size - 1)
+        MPI_Recv(&tabulIn_local[ind2d(minhas_linhas+1, 0)], tam+2, MPI_INT, rank + 1, TAG_B, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+      UmaVida_Paralelo(tabulIn_local, tabulOut_local, tam, minhas_linhas);
+      
+      temp = tabulIn_local;
+      tabulIn_local = tabulOut_local;
+      tabulOut_local = temp;
+    } /* fim-for */
+    
+    MPI_Barrier(MPI_COMM_WORLD);
+    if(rank == MESTRE) t2 = wall_time();
+
+    // coleta e verifica os resultados
+    int local_cnt = 0;
+    for(int k = 1; k <= minhas_linhas; k++)
+        for(int j = 1; j <= tam; j++)
+            local_cnt += tabulIn_local[ind2d(k,j)];
+    
+    int global_cnt = 0;
+    MPI_Reduce(&local_cnt, &global_cnt, 1, MPI_INT, MPI_SUM, MESTRE, MPI_COMM_WORLD);
+    
+    // coleta fatias finais
+    if (rank == MESTRE) {
+        int offset_linhas = 0;
+        for(i = 0; i < size; i++) {
+            int linhas_p = (i < resto) ? linhas_por_proc + 1 : linhas_por_proc;
+            if (i == MESTRE) {
+                memcpy(&tabulIn_global[ind2d(offset_linhas+1, 0)], &tabulIn_local[ind2d(1,0)], linhas_p * (tam+2) * sizeof(int));
+            } else {
+                MPI_Recv(&tabulIn_global[ind2d(offset_linhas+1, 0)], linhas_p * (tam+2), MPI_INT, i, TAG_A, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+            offset_linhas += linhas_p;
+        }
+    } else {
+        MPI_Send(&tabulIn_local[ind2d(1,0)], minhas_linhas * (tam+2), MPI_INT, MESTRE, TAG_A, MPI_COMM_WORLD);
+    }
+    
+    if (rank == MESTRE) {
+      if (Correto(tabulIn_global, tam, global_cnt))
+        printf("**RESULTADO CORRETO**\n");
+      else
+        printf("**RESULTADO ERRADO**\n");
+
+      t3 = wall_time();
+      printf("tam=%d; ranks=%d; tempos: init=%7.7f, comp=%7.7f, fim=%7.7f, tot=%7.7f \n",
+            tam, size, t1-t0, t2-t1, t3-t2, t3-t0);
+
+      free(tabulIn_global);
+    }
+    
+    free(tabulIn_local);
+    free(tabulOut_local);
+  } /* fim-for-pow */
+  
+  MPI_Finalize();
+  return 0;
+} /* fim-main */
