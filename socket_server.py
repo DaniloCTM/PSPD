@@ -4,9 +4,17 @@ import json
 import time
 from engines.spark_engine import process_with_spark
 from engines.mpi_engine import process_with_mpi
+import requests
 
 HOST = '0.0.0.0'
 PORT = 5000
+
+metrics = {
+    "clientes_atendidos": 0,
+    "tempo_total_execucao": 0.0,
+    "tempos_execucao": []
+}
+metrics_lock = threading.Lock()
 
 def handle_client(conn, addr):
     print(f"[+] Conexão recebida de {addr}")
@@ -42,6 +50,24 @@ def handle_client(conn, addr):
 
         conn.sendall(json.dumps(response).encode())
         print(f"[✓] Resposta enviada a {addr}")
+
+        with metrics_lock:
+            metrics["clientes_atendidos"] += 1
+            metrics["tempo_total_execucao"] += response["tempo_execucao"]
+            metrics["tempos_execucao"].append(response["tempo_execucao"])
+            with open("metrics.json", "w") as f:
+                json.dump(metrics, f, indent=2)
+
+        try:
+            es_data = {
+                "id_cliente": id_cliente,
+                "engine": engine_type,
+                "tempo_execucao": response["tempo_execucao"],
+                "timestamp": time.time()
+            }
+            requests.post("http://localhost:9200/jogodavida-metricas/_doc", json=es_data)
+        except Exception as e:
+            print(f"Erro ao enviar para ElasticSearch: {e}")
 
     except Exception as e:
         print(f"[!] Erro: {e}")
